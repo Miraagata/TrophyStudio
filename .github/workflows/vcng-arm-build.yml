@@ -27,6 +27,7 @@ jobs:
           xz -t vcng0144-armmin.tar.xz
           tar -xJf vcng0144-armmin.tar.xz
           test "$(cat vcng0144-armmin/VERSION)" = '0.14.4'
+          cp build-fixes/api.h vcng0144-armmin/vita/kernel/api.h
 
       - name: Build ARM plugins and installer VPK with VitaSDK 2026.08
         id: arm_build
