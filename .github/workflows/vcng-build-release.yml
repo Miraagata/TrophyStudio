@@ -57,7 +57,8 @@ jobs:
           fetch_blob part_20 b9749e043bc95d94d20367a8a3859c61d65a33e1
           fetch_blob part_21 c8d2b3ecdfc90f7c38ce8861b69b8c3cf1390a9b
           fetch_blob part_22 e725d029235ebffebe089da7e3e9780a8469d535
-          cat /tmp/vcng-parts/part_* > /tmp/vcng-arm-minimal.tar.xz
+          cat /tmp/vcng-parts/part_* > /tmp/vcng-arm-minimal.tar.xz.b64
+          base64 --decode /tmp/vcng-arm-minimal.tar.xz.b64 > /tmp/vcng-arm-minimal.tar.xz
           echo "217a06e1ba78668ef9c72ad7093a79444e33e2801904d23c9ad046efb577d41a  /tmp/vcng-arm-minimal.tar.xz" | sha256sum -c -
           tar -xJf /tmp/vcng-arm-minimal.tar.xz
           test "$(cat VitaCheat-NG-0.14.4/VERSION)" = "0.14.4"
