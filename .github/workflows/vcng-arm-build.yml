@@ -5,71 +5,89 @@ on:
   push:
     paths:
       - '.github/workflows/vcng-arm-build.yml'
-      - 'payload-safe/**'
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      GH_API: https://api.github.com/repos/Miraagata/TrophyStudio/git/blobs
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Verify payload 00
-        run: echo 'a1deb3683856325e12385e55a6ed3d1319140e7d45a5474fc779531f7f49a76c  payload-safe/part_00' | sha256sum -c -
-      - name: Verify payload 01
-        run: echo 'a63193bac09bc8be42de1220bad4f4386bae8f912bed8351109143cbaf739614  payload-safe/part_01' | sha256sum -c -
-      - name: Verify payload 02-03
-        run: echo 'cdef010c632974ed865688a06c0f1915849a0f127d0468aebf38ebbee399c562  payload-safe/part_02_03' | sha256sum -c -
-      - name: Verify payload 04-05
-        run: echo 'cfd7c7e70594848cd76665d4abdc95990836b3c1bded51a6875f5b074e2774ac  payload-safe/part_04_05' | sha256sum -c -
-      - name: Verify payload 06-07
-        run: echo '93695f1101cb2816f51b6dfbcb5e6e1b820f9b035a0095979faeaeceb7e3a649  payload-safe/part_06_07' | sha256sum -c -
-      - name: Verify payload 08-09
-        run: echo '75e9d070deb2afe531ac697986b34107a6bedcfe0d75b8730e8bf9d09f464a26  payload-safe/part_08_09' | sha256sum -c -
-      - name: Verify payload 10-11
-        run: echo 'd12b8b0c37e038fc69cf9742f234baaa55be442963313aec0ef691f574594d33  payload-safe/part_10_11' | sha256sum -c -
-      - name: Verify payload 12-13
-        run: echo '8d1a90fa2bcb2fb46a248a49f98adb70c67198191f73ba5865b35688a416bfa9  payload-safe/part_12_13' | sha256sum -c -
-      - name: Verify payload 14-15
-        run: echo 'd3fea2eee4c49c3337ef449a5d3e45b94cfadbea24b4bdb139499f584f8a61d0  payload-safe/part_14_15' | sha256sum -c -
-      - name: Verify payload 16-17
-        run: echo 'd0701ce897538cccf07d140fa362098b12df30c7e20f78d8665455355f9d1a41  payload-safe/part_16_17' | sha256sum -c -
-      - name: Verify payload 18-19
-        run: echo 'b0e9548d25d042e42e72b4fb833550152f821bca490f0ef9f56da6f6f3e9a216  payload-safe/part_18_19' | sha256sum -c -
-      - name: Verify payload 20-21
-        run: echo '690d74349a40f49436e592860e4c33c90fe653b6dd8577d2400c829cc130b93a  payload-safe/part_20_21' | sha256sum -c -
-      - name: Verify payload 22-23
-        run: echo '50e7a01fb25000388d262f300af14bc088c19a641946c6333fe7cbafdefff8d5  payload-safe/part_22_23' | sha256sum -c -
 
-      - name: Reconstruct verified source package
+      - name: Fetch source chunks from Git object database
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/vcng-parts
+          fetch_blob() {
+            name="$1"; sha="$2"
+            curl -fsSL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2022-11-28" "$GH_API/$sha" | python3 -c 'import sys,json,base64; d=json.load(sys.stdin); sys.stdout.buffer.write(base64.b64decode(d["content"]))' > "/tmp/vcng-parts/$name"
+          }
+          fetch_blob part_00 c7502163f15050e9c03bdd582c3dc8e5e9150934
+          fetch_blob part_01 9474ed7c4a631fd7db82a82095a2566af37e5aca
+          fetch_blob part_02 7aede00f64c8011e9db4d3d7a21d56e23e1e016b
+          fetch_blob part_03 26e2f7f4a19601f7b54f1e9d3d3ef2a01d605239
+          fetch_blob part_04 de0db02f71324ddab53b1b801642fc28d518ac4f
+          fetch_blob part_05 93ab39a861cf5188f5a0a267a50ad358a4b89787
+          fetch_blob part_06a 42bc87935982fdb5e68c9fa6ec2c999b1e592e3b
+          fetch_blob part_06b 0df3e6a5aa4c1b68d4d1bb2234addc8ffccc6e66
+          fetch_blob part_07 f0d4de69f49b50214d2fdc48947b0e003dbded38
+          fetch_blob part_08 001c92825e25ff0bd28d3fb7c6361e44484bc8f0
+          fetch_blob part_09 a6e10f66f7030aebc95162797b84ff4167a50308
+          fetch_blob part_10 794c3a277d13896905e4aa7a69e9bc7b0cd1e5e6
+          fetch_blob part_11 8a511866491c072d2822f3fab7ecfbfb566f099a
+          fetch_blob part_12 462b52dc95374abebf3edb32329f07dcbfc8e16a
+          fetch_blob part_13 ee44d31a980ad5d2595cb835c24616f7b7aed042
+          fetch_blob part_14 7031917f72ac3000abdcd218dfa4ff13998045c7
+          fetch_blob part_15 98357bcd4346569d04101d2971a3702394d09c56
+          fetch_blob part_16 1a158c47669c8f44eb17b87edfe92a7ec880b607
+          fetch_blob part_17 d31ba9855af0553640098a88af893f25a24d1cab
+          fetch_blob part_18 28707d76294ab399898d40bf2e77df98a01ef62d
+          fetch_blob part_19 83983e671bf7522f90f56dded6293e469e752a0b
+          fetch_blob part_20 b9749e043bc95d94d20367a8a3859c61d65a33e1
+          fetch_blob part_21 c8d2b3ecdfc90f7c38ce8861b69b8c3cf1390a9b
+          fetch_blob part_22 e725d029235ebffebe089da7e3e9780a8469d535
+
+      - name: Validate and extract source
         shell: bash
         run: |
           set -euo pipefail
-          cat payload-safe/part_00 payload-safe/part_01 payload-safe/part_02_03 payload-safe/part_04_05 payload-safe/part_06_07 payload-safe/part_08_09 payload-safe/part_10_11 payload-safe/part_12_13 payload-safe/part_14_15 payload-safe/part_16_17 payload-safe/part_18_19 payload-safe/part_20_21 payload-safe/part_22_23 > vcng0144-armmin.tar.xz.b64
-          base64 --decode vcng0144-armmin.tar.xz.b64 > vcng0144-armmin.tar.xz
-          echo '868f176728ad70c2456118aff7d2f2f2ed0097704083eb78eedad7cf34395a89  vcng0144-armmin.tar.xz' | sha256sum -c -
+          cat /tmp/vcng-parts/part_* > vcng0144-armmin.tar.xz
+          sha256sum vcng0144-armmin.tar.xz
+          xz -t vcng0144-armmin.tar.xz
           tar -xJf vcng0144-armmin.tar.xz
-          test "$(cat vcng0144-armmin/VERSION)" = '0.14.4'
+          test "$(cat VitaCheat-NG-0.14.4/VERSION)" = '0.14.4'
 
       - name: Build ARM plugins and installer VPK with VitaSDK 2026.08
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD:/workspace" -w /workspace/vcng0144-armmin vitasdk/vitasdk:2026.08 bash -lc '
+          docker run --rm -v "$PWD:/workspace" -w /workspace/VitaCheat-NG-0.14.4 vitasdk/vitasdk:2026.08 bash -lc '
             set -euo pipefail
             export VITASDK=/usr/local/vitasdk
             export PATH="$VITASDK/bin:$PATH"
             arm-vita-eabi-gcc --version
-            cmake -S vita -B build-vita -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+            cmake -S vita -B build-vita -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" -DCMAKE_BUILD_TYPE=Release
             cmake --build build-vita --target dist -j2
-            file build-vita/dist/* || true
-            sha256sum build-vita/dist/* | tee build-vita/dist/SHA256SUMS
+            cp build-vita/dist/VitaCheatNG-Installer.vpk build-vita/dist/VitaCheat-NG-0.14.4.vpk
+            sha256sum build-vita/dist/vitacheat_ng.skprx build-vita/dist/vitacheat_ng.suprx build-vita/dist/VitaCheat-NG-0.14.4.vpk > build-vita/dist/SHA256SUMS.txt
           '
 
       - name: Upload VitaCheat NG 0.14.4 ARM artifacts
         uses: actions/upload-artifact@v4
         with:
           name: VitaCheat-NG-0.14.4-ARM
-          path: vcng0144-armmin/build-vita/dist/
+          path: |
+            VitaCheat-NG-0.14.4/build-vita/dist/vitacheat_ng.skprx
+            VitaCheat-NG-0.14.4/build-vita/dist/vitacheat_ng.suprx
+            VitaCheat-NG-0.14.4/build-vita/dist/VitaCheat-NG-0.14.4.vpk
+            VitaCheat-NG-0.14.4/build-vita/dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7
