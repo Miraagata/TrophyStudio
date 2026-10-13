@@ -14,25 +14,38 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Verify payload 00
+        run: echo 'a1deb3683856325e12385e55a6ed3d1319140e7d45a5474fc779531f7f49a76c  payload-safe/part_00' | sha256sum -c -
+      - name: Verify payload 01
+        run: echo 'a63193bac09bc8be42de1220bad4f4386bae8f912bed8351109143cbaf739614  payload-safe/part_01' | sha256sum -c -
+      - name: Verify payload 02-03
+        run: echo 'cdef010c632974ed865688a06c0f1915849a0f127d0468aebf38ebbee399c562  payload-safe/part_02_03' | sha256sum -c -
+      - name: Verify payload 04-05
+        run: echo 'cfd7c7e70594848cd76665d4abdc95990836b3c1bded51a6875f5b074e2774ac  payload-safe/part_04_05' | sha256sum -c -
+      - name: Verify payload 06-07
+        run: echo '93695f1101cb2816f51b6dfbcb5e6e1b820f9b035a0095979faeaeceb7e3a649  payload-safe/part_06_07' | sha256sum -c -
+      - name: Verify payload 08-09
+        run: echo '75e9d070deb2afe531ac697986b34107a6bedcfe0d75b8730e8bf9d09f464a26  payload-safe/part_08_09' | sha256sum -c -
+      - name: Verify payload 10-11
+        run: echo 'd12b8b0c37e038fc69cf9742f234baaa55be442963313aec0ef691f574594d33  payload-safe/part_10_11' | sha256sum -c -
+      - name: Verify payload 12-13
+        run: echo '8d1a90fa2bcb2fb46a248a49f98adb70c67198191f73ba5865b35688a416bfa9  payload-safe/part_12_13' | sha256sum -c -
+      - name: Verify payload 14-15
+        run: echo 'd3fea2eee4c49c3337ef449a5d3e45b94cfadbea24b4bdb139499f584f8a61d0  payload-safe/part_14_15' | sha256sum -c -
+      - name: Verify payload 16-17
+        run: echo 'd0701ce897538cccf07d140fa362098b12df30c7e20f78d8665455355f9d1a41  payload-safe/part_16_17' | sha256sum -c -
+      - name: Verify payload 18-19
+        run: echo 'b0e9548d25d042e42e72b4fb833550152f821bca490f0ef9f56da6f6f3e9a216  payload-safe/part_18_19' | sha256sum -c -
+      - name: Verify payload 20-21
+        run: echo '690d74349a40f49436e592860e4c33c90fe653b6dd8577d2400c829cc130b93a  payload-safe/part_20_21' | sha256sum -c -
+      - name: Verify payload 22-23
+        run: echo '50e7a01fb25000388d262f300af14bc088c19a641946c6333fe7cbafdefff8d5  payload-safe/part_22_23' | sha256sum -c -
 
       - name: Reconstruct verified source package
         shell: bash
         run: |
           set -euo pipefail
-          cat \
-            payload-safe/part_00 \
-            payload-safe/part_01 \
-            payload-safe/part_02_03 \
-            payload-safe/part_04_05 \
-            payload-safe/part_06_07 \
-            payload-safe/part_08_09 \
-            payload-safe/part_10_11 \
-            payload-safe/part_12_13 \
-            payload-safe/part_14_15 \
-            payload-safe/part_16_17 \
-            payload-safe/part_18_19 \
-            payload-safe/part_20_21 \
-            payload-safe/part_22_23 > vcng0144-armmin.tar.xz.b64
+          cat payload-safe/part_00 payload-safe/part_01 payload-safe/part_02_03 payload-safe/part_04_05 payload-safe/part_06_07 payload-safe/part_08_09 payload-safe/part_10_11 payload-safe/part_12_13 payload-safe/part_14_15 payload-safe/part_16_17 payload-safe/part_18_19 payload-safe/part_20_21 payload-safe/part_22_23 > vcng0144-armmin.tar.xz.b64
           base64 --decode vcng0144-armmin.tar.xz.b64 > vcng0144-armmin.tar.xz
           echo '868f176728ad70c2456118aff7d2f2f2ed0097704083eb78eedad7cf34395a89  vcng0144-armmin.tar.xz' | sha256sum -c -
           tar -xJf vcng0144-armmin.tar.xz
@@ -42,20 +55,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm \
-            -v "$PWD:/workspace" \
-            -w /workspace/vcng0144-armmin \
-            vitasdk/vitasdk:2026.08 \
-            bash -lc '
-              set -euo pipefail
-              export VITASDK=/usr/local/vitasdk
-              export PATH="$VITASDK/bin:$PATH"
-              arm-vita-eabi-gcc --version
-              cmake -S vita -B build-vita -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
-              cmake --build build-vita --target dist -j2
-              file build-vita/dist/* || true
-              sha256sum build-vita/dist/* | tee build-vita/dist/SHA256SUMS
-            '
+          docker run --rm -v "$PWD:/workspace" -w /workspace/vcng0144-armmin vitasdk/vitasdk:2026.08 bash -lc '
+            set -euo pipefail
+            export VITASDK=/usr/local/vitasdk
+            export PATH="$VITASDK/bin:$PATH"
+            arm-vita-eabi-gcc --version
+            cmake -S vita -B build-vita -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+            cmake --build build-vita --target dist -j2
+            file build-vita/dist/* || true
+            sha256sum build-vita/dist/* | tee build-vita/dist/SHA256SUMS
+          '
 
       - name: Upload VitaCheat NG 0.14.4 ARM artifacts
         uses: actions/upload-artifact@v4
