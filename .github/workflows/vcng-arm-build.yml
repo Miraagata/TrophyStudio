@@ -17,57 +17,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Fetch source chunks from Git object database
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/vcng-parts
-          fetch_blob() {
-            name="$1"; sha="$2"
-            gh api "repos/Miraagata/TrophyStudio/git/blobs/$sha" --jq .content | tr -d '\n' | base64 --decode > "/tmp/vcng-parts/$name"
-          }
-          fetch_blob part_00 c7502163f15050e9c03bdd582c3dc8e5e9150934
-          fetch_blob part_01 9474ed7c4a631fd7db82a82095a2566af37e5aca
-          fetch_blob part_02 7aede00f64c8011e9db4d3d7a21d56e23e1e016b
-          fetch_blob part_03 26e2f7f4a19601f7b54f1e9d3d3ef2a01d605239
-          fetch_blob part_04 de0db02f71324ddab53b1b801642fc28d518ac4f
-          fetch_blob part_05 93ab39a861cf5188f5a0a267a50ad358a4b89787
-          fetch_blob part_06a 42bc87935982fdb5e68c9fa6ec2c999b1e592e3b
-          fetch_blob part_06b 0df3e6a5aa4c1b68d4d1bb2234addc8ffccc6e66
-          fetch_blob part_07 f0d4de69f49b50214d2fdc48947b0e003dbded38
-          fetch_blob part_08 001c92825e25ff0bd28d3fb7c6361e44484bc8f0
-          fetch_blob part_09 a6e10f66f7030aebc95162797b84ff4167a50308
-          fetch_blob part_10 794c3a277d13896905e4aa7a69e9bc7b0cd1e5e6
-          fetch_blob part_11 8a511866491c072d2822f3fab7ecfbfb566f099a
-          fetch_blob part_12 462b52dc95374abebf3edb32329f07dcbfc8e16a
-          fetch_blob part_13 ee44d31a980ad5d2595cb835c24616f7b7aed042
-          fetch_blob part_14 7031917f72ac3000abdcd218dfa4ff13998045c7
-          fetch_blob part_15 98357bcd4346569d04101d2971a3702394d09c56
-          fetch_blob part_16 1a158c47669c8f44eb17b87edfe92a7ec880b607
-          fetch_blob part_17 d31ba9855af0553640098a88af893f25a24d1cab
-          fetch_blob part_18 28707d76294ab399898d40bf2e77df98a01ef62d
-          fetch_blob part_19 83983e671bf7522f90f56dded6293e469e752a0b
-          fetch_blob part_20 b9749e043bc95d94d20367a8a3859c61d65a33e1
-          fetch_blob part_21 c8d2b3ecdfc90f7c38ce8861b69b8c3cf1390a9b
-          fetch_blob part_22 e725d029235ebffebe089da7e3e9780a8469d535
-
-      - name: Validate and extract source
+      - name: Reconstruct and verify exact VitaCheat NG 0.14.4 source
         shell: bash
         run: |
           set -euo pipefail
-          cat /tmp/vcng-parts/part_* > vcng0144-armmin.tar.xz
-          sha256sum vcng0144-armmin.tar.xz
+          cat payload-arm/part_00 payload-arm/part_01 payload-arm/part_02 payload-arm/part_03 payload-arm/part_04 payload-arm/part_05 payload-arm/part_06 payload-arm/part_07 payload-arm/part_08 payload-arm/part_09 payload-arm/part_10 payload-arm/part_11 > vcng0144-armmin.tar.xz.b64
+          base64 --decode vcng0144-armmin.tar.xz.b64 > vcng0144-armmin.tar.xz
+          echo '868f176728ad70c2456118aff7d2f2f2ed0097704083eb78eedad7cf34395a89  vcng0144-armmin.tar.xz' | sha256sum -c -
           xz -t vcng0144-armmin.tar.xz
           tar -xJf vcng0144-armmin.tar.xz
-          test "$(cat VitaCheat-NG-0.14.4/VERSION)" = '0.14.4'
+          test "$(cat vcng0144-armmin/VERSION)" = '0.14.4'
 
       - name: Build ARM plugins and installer VPK with VitaSDK 2026.08
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD:/workspace" -w /workspace/VitaCheat-NG-0.14.4 vitasdk/vitasdk:2026.08 bash -lc '
+          docker run --rm -v "$PWD:/workspace" -w /workspace/vcng0144-armmin vitasdk/vitasdk:2026.08 bash -lc '
             set -euo pipefail
             export VITASDK=/usr/local/vitasdk
             export PATH="$VITASDK/bin:$PATH"
@@ -83,9 +48,9 @@ jobs:
         with:
           name: VitaCheat-NG-0.14.4-ARM
           path: |
-            VitaCheat-NG-0.14.4/build-vita/dist/vitacheat_ng.skprx
-            VitaCheat-NG-0.14.4/build-vita/dist/vitacheat_ng.suprx
-            VitaCheat-NG-0.14.4/build-vita/dist/VitaCheat-NG-0.14.4.vpk
-            VitaCheat-NG-0.14.4/build-vita/dist/SHA256SUMS.txt
+            vcng0144-armmin/build-vita/dist/vitacheat_ng.skprx
+            vcng0144-armmin/build-vita/dist/vitacheat_ng.suprx
+            vcng0144-armmin/build-vita/dist/VitaCheat-NG-0.14.4.vpk
+            vcng0144-armmin/build-vita/dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7
