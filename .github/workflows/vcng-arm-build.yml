@@ -1,0 +1,66 @@
+name: VitaCheat NG ARM Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/vcng-arm-build.yml'
+      - 'payload-safe/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reconstruct verified source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            payload-safe/part_00 \
+            payload-safe/part_01 \
+            payload-safe/part_02_03 \
+            payload-safe/part_04_05 \
+            payload-safe/part_06_07 \
+            payload-safe/part_08_09 \
+            payload-safe/part_10_11 \
+            payload-safe/part_12_13 \
+            payload-safe/part_14_15 \
+            payload-safe/part_16_17 \
+            payload-safe/part_18_19 \
+            payload-safe/part_20_21 \
+            payload-safe/part_22_23 > vcng0144-armmin.tar.xz.b64
+          base64 --decode vcng0144-armmin.tar.xz.b64 > vcng0144-armmin.tar.xz
+          echo '868f176728ad70c2456118aff7d2f2f2ed0097704083eb78eedad7cf34395a89  vcng0144-armmin.tar.xz' | sha256sum -c -
+          tar -xJf vcng0144-armmin.tar.xz
+          test "$(cat vcng0144-armmin/VERSION)" = '0.14.4'
+
+      - name: Build ARM plugins and installer VPK with VitaSDK 2026.08
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace/vcng0144-armmin \
+            vitasdk/vitasdk:2026.08 \
+            bash -lc '
+              set -euo pipefail
+              export VITASDK=/usr/local/vitasdk
+              export PATH="$VITASDK/bin:$PATH"
+              arm-vita-eabi-gcc --version
+              cmake -S vita -B build-vita -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+              cmake --build build-vita --target dist -j2
+              file build-vita/dist/* || true
+              sha256sum build-vita/dist/* | tee build-vita/dist/SHA256SUMS
+            '
+
+      - name: Upload VitaCheat NG 0.14.4 ARM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VitaCheat-NG-0.14.4-ARM
+          path: vcng0144-armmin/build-vita/dist/
+          if-no-files-found: error
+          retention-days: 7
