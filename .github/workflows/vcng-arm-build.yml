@@ -29,9 +29,10 @@ jobs:
           test "$(cat vcng0144-armmin/VERSION)" = '0.14.4'
 
       - name: Build ARM plugins and installer VPK with VitaSDK 2026.08
+        id: arm_build
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
           docker run --rm -v "$PWD:/workspace" -w /workspace/vcng0144-armmin vitasdk/vitasdk:2026.08 bash -lc '
             set -euo pipefail
             export VITASDK=/usr/local/vitasdk
@@ -41,9 +42,19 @@ jobs:
             cmake --build build-vita --target dist -j2
             cp build-vita/dist/VitaCheatNG-Installer.vpk build-vita/dist/VitaCheat-NG-0.14.4.vpk
             sha256sum build-vita/dist/vitacheat_ng.skprx build-vita/dist/vitacheat_ng.suprx build-vita/dist/VitaCheat-NG-0.14.4.vpk > build-vita/dist/SHA256SUMS.txt
-          '
+          ' 2>&1 | tee vcng-arm-build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VitaCheat-NG-0.14.4-build-log
+          path: vcng-arm-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload VitaCheat NG 0.14.4 ARM artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: VitaCheat-NG-0.14.4-ARM
