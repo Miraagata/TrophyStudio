@@ -1,0 +1,183 @@
+name: VitaCheat NG verified build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'codex/vitacheat-ng-*'
+    paths:
+      - 'vitacheat-ng/**'
+      - '.ci/vitacheat/**'
+      - '.github/workflows/vitacheat-build.yml'
+  pull_request:
+    paths:
+      - 'vitacheat-ng/**'
+      - '.ci/vitacheat/**'
+      - '.github/workflows/vitacheat-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vitacheat-ng-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: vitacheat-ng
+
+jobs:
+  host:
+    name: Host ${{ matrix.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [normal, sanitizer, release]
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Reconstruct and verify corrected source
+        working-directory: .
+        run: python3 .ci/vitacheat/unpack.py
+
+      - name: Host regression gate
+        if: matrix.mode == 'normal'
+        run: |
+          set -euo pipefail
+          python3 tools/test_host.py 2>&1 | tee host-normal.log
+
+      - name: ASan and UBSan regression gate
+        if: matrix.mode == 'sanitizer'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          set -euo pipefail
+          python3 tools/test_host.py --sanitize 2>&1 | tee host-sanitizer.log
+
+      - name: Release CTest gate with assertions enabled
+        if: matrix.mode == 'release'
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-release --parallel 2
+          ctest --test-dir build-release --output-on-failure 2>&1 | tee host-release.log
+
+      - name: Upload host logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: VitaCheat-NG-host-${{ matrix.mode }}-${{ github.run_id }}
+          path: |
+            vitacheat-ng/host-*.log
+            vitacheat-ng/build-release/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  arm:
+    name: ARM plugins and installer
+    needs: host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VITASDK: ${{ runner.temp }}/vitasdk
+      SDK_TAG: sdk-snapshot-20260825.611.1
+      SDK_SHA256: 3d5be8ad0fae5de872c13328f3508a59b9e1eec504269eec64e47d06de78b098
+      TAIHEN_TAG: packages-2026.08-snapshot-20260925.50.1
+      TAIHEN_SHA256: 93d2075b6b61a164224a2aad651d3d6787f31f3a19c3e2bada7c99844f9fae90
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Reconstruct and verify corrected source
+        working-directory: .
+        run: python3 .ci/vitacheat/unpack.py
+
+      - name: Install exact VitaSDK 2026.08 and taiHEN stubs
+        run: |
+          set -euo pipefail
+          # Official 2026.08 channel, observed at website commit
+          # 26a8cb5a185b39fccbe1b62387dc6f00bf32ddd4:
+          # https://github.com/vitasdk/vitasdk.github.io/blob/26a8cb5a185b39fccbe1b62387dc6f00bf32ddd4/channels/2026.08.json
+          # The SDK archive includes vita-headers and standard stubs. Only
+          # taiHEN headers/stubs need adding to this ephemeral SDK tree.
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/vitasdk.tar.bz2" \
+            "https://github.com/vitasdk/autobuilds/releases/download/$SDK_TAG/vitasdk-bootstrap-x86_64-linux-gnu.tar.bz2"
+          printf '%s  %s\n' "$SDK_SHA256" "$RUNNER_TEMP/vitasdk.tar.bz2" | sha256sum --check -
+          mkdir "$VITASDK"
+          tar -xjf "$RUNNER_TEMP/vitasdk.tar.bz2" -C "$VITASDK" --strip-components=1
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/taihen.pkg.tar.xz" \
+            "https://github.com/vitasdk/vitasdk-autobuild/releases/download/$TAIHEN_TAG/taihen-0.11-1-vita.pkg.tar.xz"
+          printf '%s  %s\n' "$TAIHEN_SHA256" "$RUNNER_TEMP/taihen.pkg.tar.xz" | sha256sum --check -
+          tar -xJf "$RUNNER_TEMP/taihen.pkg.tar.xz" -C "$VITASDK" \
+            --exclude=.PKGINFO --exclude=.BUILDINFO --exclude=.MTREE
+          test -f "$VITASDK/share/vita.toolchain.cmake"
+          test -f "$VITASDK/arm-vita-eabi/include/taihen.h"
+          test -f "$VITASDK/arm-vita-eabi/lib/libtaihenForKernel_stub.a"
+          "$VITASDK/bin/arm-vita-eabi-gcc" --version
+          printf '%s\n' "$VITASDK/bin" >> "$GITHUB_PATH"
+
+      - name: Build ARM plugins and installer VPK
+        run: |
+          set -euo pipefail
+          {
+            cmake -S vita -B build-vita \
+              -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \
+              -DCMAKE_BUILD_TYPE=Release
+            cmake --build build-vita --target dist --parallel 2
+          } 2>&1 | tee arm-build.log
+
+      - name: Verify and package outputs
+        id: package
+        run: |
+          set -euo pipefail
+          version=$(tr -d '\r\n' < VERSION)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          dist = Path('build-vita/dist')
+          with ZipFile(dist / 'VitaCheatNG-Installer.vpk') as vpk:
+              for name in ('vitacheat_ng.skprx', 'vitacheat_ng.suprx'):
+                  plugin = (dist / name).read_bytes()
+                  assert plugin, f'{name} is empty'
+                  assert vpk.read(f'res/{name}') == plugin, f'VPK embeds a different {name}'
+          PY
+          cp build-vita/dist/VitaCheatNG-Installer.vpk "build-vita/dist/VitaCheat-NG-$version.vpk"
+          {
+            printf 'VitaCheat NG %s\nsource commit: %s\n' "$version" "$GITHUB_SHA"
+            python3 -c 'import json; print("source archive SHA256:", json.load(open("../.ci/vitacheat/manifest.json"))["sha256"])'
+            printf 'VitaSDK series: 2026.08\nSDK release: %s\nSDK SHA256: %s\n' "$SDK_TAG" "$SDK_SHA256"
+            printf 'taiHEN release: %s\ntaiHEN SHA256: %s\n' "$TAIHEN_TAG" "$TAIHEN_SHA256"
+            arm-vita-eabi-gcc --version
+          } > build-vita/dist/TOOLCHAIN.txt
+          cd build-vita/dist
+          sha256sum vitacheat_ng.skprx vitacheat_ng.suprx \
+            VitaCheatNG-Installer.vpk "VitaCheat-NG-$version.vpk" TOOLCHAIN.txt > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Upload ARM log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: VitaCheat-NG-ARM-log-${{ github.run_id }}
+          path: vitacheat-ng/arm-build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload ARM plugins and installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: VitaCheat-NG-${{ steps.package.outputs.version }}-ARM
+          path: vitacheat-ng/build-vita/dist/*
+          if-no-files-found: error
+          retention-days: 14

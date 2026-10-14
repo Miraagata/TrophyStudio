@@ -1,0 +1,983 @@
+--- /dev/null
++++ b/CHANGELOG-0.14.5.md
+@@ -0,0 +1,26 @@
++# VitaCheat NG 0.14.5
++
++Focused correctness fixes on the 0.14.4 baseline.
++
++## Executor and code generation
++
++- B200 requires a currently published module/segment. An unavailable selection stops the cheat before following memory accesses instead of using a zero or stale base.
++- Memory-map enumeration invalidates previous segment bases and presence before publishing the new map. Relative selectors remain relative when invalidated, preventing accidental absolute fallback.
++- Legacy pointer generation rejects U64/I64/F64. Two independent pointer-write sequences could resolve different objects between the low and high DWORDs. U8/U16/U32 pointer generation and fixed-address 64-bit generation remain supported.
++
++## Discovery
++
++- Manual generation, readiness policy and codegen all reject signatures awaiting relocation/revalidation. Restored AoB addresses cannot become generated absolute cheats while PENDING.
++- Periodic pointer revalidation uses a persistent round-robin cursor and a host-testable selector. Each pass still validates at most two paths. Empty lists, removals, sorting and relocation merges are handled without retaining stale candidate pointers.
++- Generated cheats remain OFF; persistence wire v3 and v2 compatibility remain unchanged.
++
++## Validation
++
++- The existing 56 host test executables pass, including new regressions within `vitacode`, `codegen` and `resolver_regressions`.
++- All 56 also pass with ASan/UBSan (`detect_leaks=0` in the traced local environment).
++- GitHub Actions verifies normal host, sanitizer and CTest Release gates before building real ARM plugins and the installer with a pinned official VitaSDK 2026.08 snapshot and taiHEN package.
++- ARM build status and artifact checksums are recorded separately after the workflow completes. Hardware validation remains pending.
++
++## Scope and remaining kernel work
++
++This revision does not change the kernel syscall ABI or claim K-06/K-07 complete. Own-SUPRX forced-write exclusion, kernel initialization diagnostics and lifecycle hardware checks remain separate work. The 0.14.4 hardware gate is still outstanding; no console validation is inferred from a successful build.
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.14.4
++0.14.5
+--- /dev/null
++++ b/docs/HARDWARE_TEST_0.14.5.md
+@@ -0,0 +1,15 @@
++# VitaCheat NG 0.14.5 — hardware validation
++
++Use plugins and VPK produced by a successful build of this source commit. Verify SHA256SUMS and install/reboot normally.
++
++Repeat the storage, overlay, recovery-L and process-isolation checks in `HARDWARE_TEST_0.14.4.md`; those pending baseline checks still apply.
++
++## Regression checks
++
++1. With a purpose-built reversible diagnostic, select a B200 module/segment absent from the current map. The cheat must stop without reading or writing the following operand. Valid module/segment selections must still work.
++2. Repeat mission → loading → hub → mission. Removed segment bases must not remain usable after enumeration.
++3. Generate pointer cheats for 8/16/32-bit values and verify their normal behavior. Attempt U64/I64/F64 pointer generation: it must fail without adding a cheat. Fixed-address 64-bit generation remains available with its existing two-write behavior.
++4. Restore a previously persisted AoB candidate and press R while its signature is PENDING. Generation must be refused with a revalidation message. After unique relocation and live reread, any generated cheat must refer to the current target and start OFF.
++5. Track at least three eligible pointer paths between loading transitions. Periodic validation must eventually visit each path; a failing third path must lose CONFIRMED status. Repeat after sorting or removal of candidates.
++
++K-06 invalid-address testing still requires a dedicated safe diagnostic and protected saves. K-06 own-image exclusion and K-07 initialization status are not implemented by this revision.
+--- a/include/vcng_codegen.h
++++ b/include/vcng_codegen.h
+@@ -8,10 +8,14 @@
+ 
+ int vcng_codegen_direct(vcng_cheat *out, const char *name, uint32_t address,
+                         vcng_type type, const void *value, const char *note);
++/* Pending signatures cannot generate a cheat from their historical address.
++ * Returns -2 while relocation is pending; out is unchanged on failure. */
+ int vcng_codegen_discovery(vcng_cheat *out, const vcng_discovery_candidate *candidate,
+                            const char *name);
+ void vcng_codegen_cheat_free(vcng_cheat *cheat);
+ 
++/* Legacy pointer generation supports 8/16/32-bit values only. Returns -2 for
++ * unsupported widths, including U64/I64/F64; out is unchanged on failure. */
+ int vcng_codegen_pointer(vcng_cheat *out, const char *name,
+                          const vcng_pointer_path *path, vcng_type type,
+                          const void *value, const char *note);
+--- a/include/vcng_discovery.h
++++ b/include/vcng_discovery.h
+@@ -166,6 +166,11 @@
+ int vcng_discovery_set_pointer_path(vcng_discovery_candidate *c, const vcng_pointer_path *path, uint32_t resolved_address);
+ int vcng_discovery_note_pointer_validation(vcng_discovery_candidate *c, int success, int transition, uint32_t resolved_address);
+ int vcng_discovery_pointer_confirmed(const vcng_discovery_candidate *c);
++/* Select at most budget candidate addresses, visiting each item at most once.
++ * The caller owns the persistent cursor; it is normalized after list changes.
++ * Look addresses up again before use, since relocation can merge candidates. */
++size_t vcng_discovery_select_pointer_checks(const vcng_discovery *d, size_t *cursor,
++                                           uint32_t *addresses, size_t budget);
+ int vcng_discovery_relocate_candidate(vcng_discovery *d, uint32_t old_address, uint32_t new_address, uint64_t value);
+ size_t vcng_discovery_visible_count(const vcng_discovery *d, size_t limit);
+ size_t vcng_discovery_visible_index(const vcng_discovery *d, size_t visible_index, size_t limit);
+--- a/include/vcng_version.h
++++ b/include/vcng_version.h
+@@ -1,2 +1,2 @@
+ #pragma once
+-#define VCNG_VERSION_TEXT "0.14.4"
++#define VCNG_VERSION_TEXT "0.14.5"
+--- a/include/vcng_vitacode.h
++++ b/include/vcng_vitacode.h
+@@ -15,6 +15,7 @@
+     vcng_buttons_fn buttons;
+     vcng_delay_fn delay;
+     uint32_t seg_base[VCNG_VITA_MAX_MODULES][2];
++    uint8_t seg_present[VCNG_VITA_MAX_MODULES][2];
+     uint8_t module;
+     uint8_t segment;
+     uint8_t relative;
+@@ -32,7 +33,13 @@
+ } vcng_vita_report;
+ 
+ void vcng_vita_runtime_init(vcng_vita_runtime *rt, vcng_memory *memory);
++/* Invalidate the old map before enumerating a new one. Selectors are preserved
++ * so a pending relative access cannot silently fall back to an absolute one. */
++void vcng_vita_clear_segments(vcng_vita_runtime *rt);
++/* Publish a current segment; a zero base invalidates this entry. */
+ void vcng_vita_set_segment(vcng_vita_runtime *rt, unsigned module, unsigned segment, uint32_t base);
++/* Returns zero for an unavailable relative segment. Execution rejects that
++ * state before calling any memory callback. */
+ uint32_t vcng_vita_resolve(const vcng_vita_runtime *rt, uint32_t address);
+ size_t vcng_vita_logical_span(const vcng_code_line *lines, size_t count, size_t index);
+ int vcng_vita_execute_cheat(vcng_vita_runtime *rt, const vcng_cheat *cheat, vcng_vita_report *report);
+--- a/src/codegen.c
++++ b/src/codegen.c
+@@ -53,6 +53,9 @@
+ int vcng_codegen_discovery(vcng_cheat *out, const vcng_discovery_candidate *c,
+                            const char *name) {
+     if (!out || !c || !(c->width == 1u || c->width == 2u || c->width == 4u || c->width == 8u)) return -1;
++    /* Persisted signatures carry an address from an earlier session. Do not
++     * materialize it until a unique scan has relocated the current target. */
++    if (c->signature_pending) return -2;
+     /* Never silently mutate a Discovery candidate while generating code. */
+     uint64_t desired = c->last_value;
+     vcng_type type = c->width == 1u ? VCNG_U8 : c->width == 2u ? VCNG_U16 : c->width == 4u ? VCNG_U32 : VCNG_U64;
+@@ -74,8 +77,7 @@
+ 
+ static int emit_pointer_sequence(vcng_code_line *lines, size_t *index,
+                                  const vcng_pointer_path *path,
+-                                 size_t width, uint32_t value,
+-                                 uint32_t last_offset_adjust) {
++                                 size_t width, uint32_t value) {
+     if (!lines || !index || !path || !path->levels) return -1;
+     int bits = pointer_width_bits(width);
+     if (bits < 0) return -2;
+@@ -90,7 +92,6 @@
+     lines[i].opcode[5] = '\0';
+     lines[i].a = path->root;
+     lines[i].b = path->offsets[0];
+-    if (path->levels == 1u) lines[i].b += last_offset_adjust;
+     ++i;
+     for (unsigned level = 1; level < path->levels; ++level, ++i) {
+         lines[i].opcode[0] = '$';
+@@ -101,7 +102,6 @@
+         lines[i].opcode[5] = '\0';
+         lines[i].a = 0;
+         lines[i].b = path->offsets[level];
+-        if (level + 1u == path->levels) lines[i].b += last_offset_adjust;
+     }
+     snprintf(lines[i].opcode, sizeof(lines[i].opcode), "%s", "$3300");
+     lines[i].a = 0;
+@@ -116,9 +116,10 @@
+                          const void *value, const char *note) {
+     if (!out || !path || !value || !path->levels || path->levels > VCNG_POINTER_MAX_LEVELS) return -1;
+     size_t width = vcng_type_width(type);
+-    if (!(width == 1u || width == 2u || width == 4u || width == 8u)) return -2;
+-    size_t seqs = width == 8u ? 2u : 1u;
+-    size_t line_count = seqs * ((size_t)path->levels + 1u) + (path->relative ? 1u : 0u);
++    /* Legacy pointer writes encode 8/16/32 bits. Splitting 64 bits into two
++     * chains resolves the root twice and can write halves to different objects. */
++    if (!(width == 1u || width == 2u || width == 4u)) return -2;
++    size_t line_count = (size_t)path->levels + 1u + (path->relative ? 1u : 0u);
+     vcng_cheat tmp;
+     memset(&tmp, 0, sizeof(tmp));
+     snprintf(tmp.name, sizeof(tmp.name), "%s", name && *name ? name : "Stable pointer cheat");
+@@ -138,21 +139,11 @@
+         tmp.lines[i].b = 0;
+         ++i;
+     }
+-    if (width < 8u) {
+-        uint32_t raw = 0;
+-        memcpy(&raw, value, width);
+-        if (emit_pointer_sequence(tmp.lines, &i, path, width, raw, 0u) != 0) {
+-            vcng_codegen_cheat_free(&tmp);
+-            return -4;
+-        }
+-    } else {
+-        uint32_t raw[2] = {0, 0};
+-        memcpy(raw, value, sizeof(raw));
+-        if (emit_pointer_sequence(tmp.lines, &i, path, 4u, raw[0], 0u) != 0 ||
+-            emit_pointer_sequence(tmp.lines, &i, path, 4u, raw[1], 4u) != 0) {
+-            vcng_codegen_cheat_free(&tmp);
+-            return -4;
+-        }
++    uint32_t raw = 0;
++    memcpy(&raw, value, width);
++    if (emit_pointer_sequence(tmp.lines, &i, path, width, raw) != 0) {
++        vcng_codegen_cheat_free(&tmp);
++        return -4;
+     }
+     *out = tmp;
+     return 0;
+--- a/src/discovery.c
++++ b/src/discovery.c
+@@ -647,7 +647,7 @@
+  }
+  return 0;
+ }
+-int vcng_discovery_ready_for_cheat(const vcng_discovery_candidate*c){return vcng_discovery_evidence_level(c)==VCNG_DISC_EVIDENCE_STRONG;}
++int vcng_discovery_ready_for_cheat(const vcng_discovery_candidate*c){return c&&!c->signature_pending&&vcng_discovery_evidence_level(c)==VCNG_DISC_EVIDENCE_STRONG;}
+ int vcng_discovery_session_verified(const vcng_discovery_candidate*c){
+  if(!c||c->session_changes<2u)return 0;
+  if(c->session_semantic_conflicts>c->session_semantic_matches+1u)return 0;
+@@ -700,6 +700,24 @@
+ }
+ int vcng_discovery_pointer_confirmed(const vcng_discovery_candidate*c){
+  return c&&c->validation==VCNG_DISC_VALIDATE_CONFIRMED&&c->stable_path_valid&&c->pointer_stability>=.80f;
++}
++size_t vcng_discovery_select_pointer_checks(const vcng_discovery*d,size_t*cursor,
++                                           uint32_t*addresses,size_t budget){
++ if(!cursor)return 0;
++ if(!d||!d->items||!d->count){*cursor=0u;return 0;}
++ *cursor%=d->count;
++ if(!addresses||!budget)return 0;
++ size_t selected=0u,seen=0u;
++ while(seen<d->count&&selected<budget){
++  size_t i=*cursor;
++  *cursor=i+1u;
++  if(*cursor==d->count)*cursor=0u;
++  seen++;
++  const vcng_discovery_candidate*c=&d->items[i];
++  if(!c->stable_path_valid||c->validation==VCNG_DISC_VALIDATE_FAILED)continue;
++  addresses[selected++]=c->address;
++ }
++ return selected;
+ }
+ int vcng_discovery_relocate_candidate(vcng_discovery*d,uint32_t olda,uint32_t newa,uint64_t value){
+  if(!d||!newa)return-1;
+--- a/src/vitacode.c
++++ b/src/vitacode.c
+@@ -17,13 +17,26 @@
+     rt->memory = memory;
+ }
+ 
++void vcng_vita_clear_segments(vcng_vita_runtime *rt) {
++    if (!rt) return;
++    memset(rt->seg_present, 0, sizeof(rt->seg_present));
++    memset(rt->seg_base, 0, sizeof(rt->seg_base));
++}
++
+ void vcng_vita_set_segment(vcng_vita_runtime *rt, unsigned module, unsigned segment, uint32_t base) {
+     if (!rt || module >= VCNG_VITA_MAX_MODULES || segment > 1) return;
+     rt->seg_base[module][segment] = base;
++    rt->seg_present[module][segment] = base != 0u;
++}
++
++static int segment_available(const vcng_vita_runtime *rt, unsigned module, unsigned segment) {
++    return rt && module < VCNG_VITA_MAX_MODULES && segment < 2u &&
++           rt->seg_present[module][segment];
+ }
+ 
+ uint32_t vcng_vita_resolve(const vcng_vita_runtime *rt, uint32_t address) {
+     if (!rt || !rt->relative) return address;
++    if (!segment_available(rt, rt->module, rt->segment)) return 0;
+     return rt->seg_base[rt->module][rt->segment] + address;
+ }
+ 
+@@ -260,6 +273,14 @@
+         uint16_t op=parse_op(l->opcode);
+         if (op==0xFFFFu) { rep.unsupported++; rt->unsupported_ops++; i++; continue; }
+         unsigned family=op>>12;
++        /* A remap invalidates the selected base too. Keep relative mode until
++         * a valid B2 selects a published segment; never use zero as a base. */
++        if (rt->relative && family != 0xBu &&
++            !segment_available(rt, rt->module, rt->segment)) {
++            rep.unsupported++; rt->unsupported_ops++; rep.stopped=1;
++            if (report) *report=rep;
++            return 0;
++        }
+         size_t span=1;
+         int rc=0;
+         switch(family) {
+@@ -295,9 +316,10 @@
+                     /* B2AA: AA is the module serial. The low bit of the first
+                        operand selects seg0/seg1 (documented as B^8 in the wiki). */
+                     unsigned module=(op & 0xFFu);
+-                    if (module>=VCNG_VITA_MAX_MODULES) { rc=1; break; }
++                    unsigned segment=l->a & 1u;
++                    if (!segment_available(rt, module, segment)) { rc=1; break; }
+                     rt->module=(uint8_t)module;
+-                    rt->segment=(uint8_t)(l->a & 1u);
++                    rt->segment=(uint8_t)segment;
+                     rt->relative=1;
+                 } else {
+                     /* Unknown B-family codes are state/base modifiers. Continuing after
+--- a/tests/test_codegen.c
++++ b/tests/test_codegen.c
+@@ -1,9 +1,178 @@
+ #include <assert.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include "vcng_codegen.h"
++#include "vcng_discovery_state.h"
++#include "vcng_signature.h"
++#include "vcng_vitacode.h"
++
++typedef struct {
++    uint32_t base;
++    uint8_t data[0x4000];
++    uint32_t changing_root, next_root;
++    unsigned root_reads, writes;
++} fake_mem;
++
++static int rd(void *ctx, uint32_t address, void *out, size_t size) {
++    fake_mem *m = ctx;
++    if (address < m->base || (uint64_t)address + size > (uint64_t)m->base + sizeof(m->data)) return -1;
++    memcpy(out, m->data + (address - m->base), size);
++    if (address == m->changing_root && size == 4u) {
++        m->root_reads++;
++        memcpy(m->data + (address - m->base), &m->next_root, 4u);
++    }
++    return 0;
++}
++
++static int wr(void *ctx, uint32_t address, const void *value, size_t size) {
++    fake_mem *m = ctx;
++    if (address < m->base || (uint64_t)address + size > (uint64_t)m->base + sizeof(m->data)) return -1;
++    memcpy(m->data + (address - m->base), value, size);
++    m->writes++;
++    return 0;
++}
++
++static void pointer_widths(void) {
++    fake_mem m = {0};
++    m.base = 0x81000000u;
++    vcng_memory memory = {rd, wr, &m};
++    vcng_pointer_path path = {0};
++    path.root = m.base + 0x100u;
++    path.levels = 1u;
++    path.offsets[0] = 0x20u;
++    uint32_t first_object = m.base + 0x200u;
++    uint32_t second_object = m.base + 0x300u;
++    m.changing_root = path.root;
++    m.next_root = second_object - path.offsets[0];
++    uint32_t initial_root = first_object - path.offsets[0];
++    memcpy(m.data + 0x100u, &initial_root, 4u);
++
++    /* This root changes immediately after each read. A split 64-bit lowering
++     * would place the two halves in different objects; generation must stop. */
++    const vcng_type wide_types[] = {VCNG_U64, VCNG_I64, VCNG_F64};
++    uint64_t wide = UINT64_C(0x1122334455667788);
++    vcng_cheat c = {0};
++    for (size_t i = 0; i < sizeof(wide_types) / sizeof(wide_types[0]); ++i) {
++        assert(vcng_codegen_pointer(&c, "Wide pointer", &path, wide_types[i], &wide, NULL) == -2);
++        assert(c.lines == NULL && c.count == 0u && c.capacity == 0u && !c.auto_enable);
++    }
++    assert(m.root_reads == 0u && m.writes == 0u);
++
++    const vcng_type narrow_types[] = {VCNG_U8, VCNG_U16, VCNG_U32};
++    uint32_t value = 0x55667788u;
++    for (size_t i = 0; i < sizeof(narrow_types) / sizeof(narrow_types[0]); ++i) {
++        size_t width = vcng_type_width(narrow_types[i]);
++        memset(m.data + 0x200u, 0xa5, 8u);
++        memset(m.data + 0x300u, 0x5a, 8u);
++        memcpy(m.data + 0x100u, &initial_root, 4u);
++        m.root_reads = m.writes = 0u;
++        assert(vcng_codegen_pointer(&c, "Narrow pointer", &path, narrow_types[i], &value, NULL) == 0);
++        assert(!c.auto_enable);
++        vcng_vita_runtime rt;
++        vcng_vita_runtime_init(&rt, &memory);
++        vcng_vita_report rep = {0};
++        assert(vcng_vita_execute_cheat(&rt, &c, &rep) == 0 && !rep.stopped);
++        assert(m.root_reads == 1u && m.writes == 1u);
++        assert(memcmp(m.data + 0x200u, &value, width) == 0);
++        for (size_t j = width; j < 8u; ++j) assert(m.data[0x200u + j] == 0xa5u);
++        for (size_t j = 0; j < 8u; ++j) assert(m.data[0x300u + j] == 0x5au);
++        vcng_codegen_cheat_free(&c);
++    }
++
++    /* Fixed-address 64-bit generation retains its existing support. */
++    assert(vcng_codegen_direct(&c, "Wide direct", first_object, VCNG_U64, &wide, NULL) == 0);
++    vcng_vita_runtime rt;
++    vcng_vita_runtime_init(&rt, &memory);
++    assert(vcng_vita_execute_cheat(&rt, &c, NULL) == 0);
++    assert(memcmp(m.data + 0x200u, &wide, 8u) == 0);
++    vcng_codegen_cheat_free(&c);
++}
++
++static void pending_signature_state(void) {
++    fake_mem previous = {0}, current = {0};
++    previous.base = current.base = 0x81000000u;
++    vcng_memory old_memory = {rd, wr, &previous}, memory = {rd, wr, &current};
++    for (unsigned i = 0; i < 24u; ++i) previous.data[0x100u + i] = (uint8_t)(0x40u + i);
++    uint32_t old_value = 11u, live_value = 77u, stale_value = 33u;
++    memcpy(previous.data + 0x108u, &old_value, 4u);
++    vcng_signature_pattern captured;
++    assert(vcng_signature_capture(&old_memory, previous.base + 0x108u, 4u, &captured) == 0);
++
++    vcng_discovery discovery;
++    vcng_discovery_init(&discovery);
++    assert(vcng_discovery_track(&discovery, previous.base + 0x108u, 4u, old_value) == 0);
++    vcng_discovery_candidate *candidate = &discovery.items[0];
++    candidate->kind = VCNG_DISC_SCALE;
++    candidate->signature_valid = 1u;
++    candidate->signature_length = captured.length;
++    candidate->signature_target_offset = captured.target_offset;
++    memcpy(candidate->signature_bytes, captured.bytes, sizeof(captured.bytes));
++    memcpy(candidate->signature_mask, captured.mask, sizeof(captured.mask));
++    candidate->signature_hits = 1u;
++    candidate->signature_validations = 2u;
++    candidate->signature_uniqueness = 1.0f;
++
++    vcng_pointer_anchor anchor = {previous.base, sizeof(previous.data), 0u, 0u};
++    uint8_t *blob = NULL;
++    size_t blob_size = 0, records = 0;
++    assert(vcng_discovery_state_encode(&discovery, "PCSE12345", &anchor, 1u, 64u, &blob, &blob_size, &records) == 0);
++    assert(records == 1u && blob_size > 48u && blob[8] == 3u);
++    vcng_discovery_candidate *restored = NULL;
++    size_t count = 0;
++    assert(vcng_discovery_state_decode(blob, blob_size, "PCSE12345", &anchor, 1u, &restored, &count) == 0);
++    assert(count == 1u && restored[0].signature_valid && restored[0].signature_pending);
++    assert(restored[0].address == previous.base + 0x108u);
++    vcng_discovery_candidate before = restored[0];
++    vcng_cheat c = {0};
++    assert(vcng_codegen_discovery(&c, &restored[0], "Restored") == -2);
++    assert(c.lines == NULL && c.count == 0u && c.capacity == 0u && !c.auto_enable);
++    assert(memcmp(&before, &restored[0], sizeof(before)) == 0);
++
++    /* The next session retains a readable stale slot but the captured context
++     * now lives elsewhere. Resolve the persisted pattern with the real scanner. */
++    memcpy(current.data + 0x300u, previous.data + 0x100u, captured.length);
++    memcpy(current.data + 0x308u, &live_value, 4u);
++    memcpy(current.data + 0x108u, &stale_value, 4u);
++    vcng_signature_pattern pattern = {0};
++    pattern.length = restored[0].signature_length;
++    pattern.target_offset = restored[0].signature_target_offset;
++    memcpy(pattern.bytes, restored[0].signature_bytes, sizeof(pattern.bytes));
++    memcpy(pattern.mask, restored[0].signature_mask, sizeof(pattern.mask));
++    vcng_region region = {current.base, sizeof(current.data), 1, 1};
++    vcng_signature_job job = {0};
++    assert(vcng_signature_job_begin(&job, &memory, &region, 1u, &pattern, 4096u) == 0);
++    while (job.state == VCNG_SIGNATURE_RUNNING) assert(vcng_signature_job_step(&job, 257u) >= 0);
++    uint32_t resolved = 0;
++    uint64_t value = 0;
++    assert(vcng_signature_resolve_unique(&job, restored[0].width, &resolved, &value) == 0);
++    assert(resolved == current.base + 0x308u && value == live_value);
++    restored[0].address = restored[0].resolved_address = resolved;
++    restored[0].last_value = value;
++    /* Even a refreshed address must wait until validation releases the gate. */
++    assert(vcng_codegen_discovery(&c, &restored[0], "Restored") == -2);
++    assert(c.lines == NULL && c.count == 0u);
++    restored[0].signature_pending = 0u;
++    assert(vcng_codegen_discovery(&c, &restored[0], "Restored") == 0);
++    assert(!c.auto_enable && c.lines[0].a == resolved);
++    memset(current.data + 0x308u, 0, 4u);
++    vcng_vita_runtime rt;
++    vcng_vita_runtime_init(&rt, &memory);
++    assert(vcng_vita_execute_cheat(&rt, &c, NULL) == 0);
++    assert(current.writes == 1u);
++    assert(memcmp(current.data + 0x308u, &live_value, 4u) == 0);
++    assert(memcmp(current.data + 0x108u, &stale_value, 4u) == 0);
++
++    vcng_codegen_cheat_free(&c);
++    vcng_signature_job_free(&job);
++    free(restored);
++    free(blob);
++    vcng_discovery_free(&discovery);
++}
+ 
+ int main(void) {
++    pointer_widths();
++    pending_signature_state();
+     vcng_cheat c = {0};
+     uint32_t v = 999;
+     assert(vcng_codegen_direct(&c,"Money",0x81001234u,VCNG_U32,&v,NULL) == 0);
+--- a/tests/test_resolver_regressions.c
++++ b/tests/test_resolver_regressions.c
+@@ -1,5 +1,6 @@
+ #include "vcng_signature.h"
+ #include "vcng_discovery_state.h"
++#include "vcng_codegen.h"
+ #include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -96,7 +97,166 @@
+     assert(vcng_discovery_state_decode(blob,size,"PCSE12345",&anchor,1,&loaded,&loaded_count)==0);
+     assert(loaded_count==0); free(loaded); free(blob); vcng_discovery_free(&d);
+ }
++static vcng_discovery_candidate *candidate_at(vcng_discovery *d,uint32_t address) {
++    for(size_t i=0;i<d->count;i++)if(d->items[i].address==address)return &d->items[i];
++    return NULL;
++}
++static void pointer_round_robin(void) {
++    fixture f={0};vcng_memory memory={read_mem,NULL,&f};
++    vcng_discovery d;vcng_discovery_init(&d);
++    for(unsigned i=0;i<3u;i++) {
++        uint32_t address=100u+i*100u,root=32u+i*4u;
++        memcpy(f.data+root,&address,4u);
++        assert(vcng_discovery_track(&d,address,4u,100u)==0);
++        vcng_pointer_path path={0};path.levels=1u;path.root=root;
++        vcng_discovery_candidate *c=&d.items[i];
++        assert(vcng_discovery_set_pointer_path(c,&path,address)==0);
++        assert(vcng_discovery_note_pointer_validation(c,1,1,address)==1);
++        assert(vcng_discovery_note_pointer_validation(c,1,1,address)==1);
++        assert(vcng_discovery_note_pointer_validation(c,1,0,address)==1);
++        assert(vcng_discovery_pointer_confirmed(c));
++    }
++    /* The third resolver becomes unreadable between loading transitions. */
++    uint32_t invalid=UINT32_MAX-1u;memcpy(f.data+40u,&invalid,4u);
++    size_t cursor=0u;unsigned visits[3]={0};
++    for(unsigned pass=0;pass<2u;pass++) {
++        uint32_t addresses[2];
++        size_t count=vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u);
++        assert(count==2u);
++        for(size_t i=0;i<count;i++) {
++            vcng_discovery_candidate *c=candidate_at(&d,addresses[i]);assert(c);
++            visits[addresses[i]/100u-1u]++;
++            uint32_t resolved=0u;uint64_t value=0u;
++            int ok=vcng_pointer_resolve(&memory,&c->stable_path,NULL,0u,&resolved)==0&&
++                   memory.read(memory.ctx,resolved,&value,c->width)==0;
++            assert(vcng_discovery_note_pointer_validation(c,ok,0,resolved)==(ok?1:0));
++        }
++    }
++    assert(visits[0]==2u&&visits[1]==1u&&visits[2]==1u);
++    assert(vcng_discovery_pointer_confirmed(&d.items[0]));
++    assert(vcng_discovery_pointer_confirmed(&d.items[1]));
++    assert(!vcng_discovery_pointer_confirmed(&d.items[2]));
++    assert(d.items[2].pointer_failures==1u&&d.items[2].resolved_address==0u);
++    vcng_discovery_free(&d);
++}
++static void pointer_scheduler_mutations(void) {
++    vcng_discovery d;vcng_discovery_init(&d);
++    size_t cursor=SIZE_MAX;uint32_t addresses[8]={0xabcdef01u};
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u)==0u&&cursor==0u);
++    assert(addresses[0]==0xabcdef01u);
++    assert(vcng_discovery_select_pointer_checks(NULL,&cursor,addresses,2u)==0u);
++    assert(vcng_discovery_select_pointer_checks(&d,NULL,addresses,2u)==0u);
++    for(unsigned i=0;i<5u;i++) {
++        assert(vcng_discovery_track(&d,100u+i*100u,4u,100u)==0);
++        d.items[i].stable_path_valid=1u;
++        d.items[i].validation=VCNG_DISC_VALIDATE_CONFIRMING;
++    }
++    d.items[1].stable_path_valid=0u;
++    d.items[2].validation=VCNG_DISC_VALIDATE_FAILED;
++    d.items[0].pointer_hits=d.items[3].pointer_hits=d.items[4].pointer_hits=1u;
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u)==2u);
++    assert(addresses[0]==100u&&addresses[1]==400u&&cursor==4u);
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u)==2u);
++    assert(addresses[0]==500u&&addresses[1]==100u&&cursor==1u);
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,0u)==0u&&cursor==1u);
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,NULL,2u)==0u&&cursor==1u);
++    /* A large budget still visits each eligible item only once. */
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,8u)==3u);
++    assert(addresses[0]==400u&&addresses[1]==500u&&addresses[2]==100u);
++    assert(cursor==1u);
++
++    /* Sorting changes positions, not eligibility; pruning can invalidate cursor. */
++    assert(vcng_discovery_sort(&d)==0);
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,8u)==3u);
++    for(size_t i=0;i<3u;i++) {
++        assert(addresses[i]!=200u&&addresses[i]!=300u);
++        for(size_t j=0;j<i;j++)assert(addresses[j]!=addresses[i]);
++    }
++    cursor=4u;
++    assert(vcng_discovery_prune(&d,2u)==3u&&d.count==2u);
++    size_t count=vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u);
++    assert(count==2u&&cursor<d.count&&addresses[0]!=addresses[1]);
++    vcng_region remaining={addresses[0],4u,1,1};
++    cursor=1u;
++    assert(vcng_discovery_filter_regions(&d,&remaining,1u,1)==1u&&d.count==1u);
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u)==1u&&cursor==0u);
++    assert(addresses[0]==remaining.base);
++    vcng_region absent={900u,4u,1,1};
++    assert(vcng_discovery_filter_regions(&d,&absent,1u,1)==1u&&d.count==0u);
++    cursor=SIZE_MAX;
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u)==0u&&cursor==0u);
++    vcng_discovery_free(&d);
++
++    /* A relocation can merge entries after selection; subsequent passes must
++     * normalize the cursor and return only surviving candidate addresses. */
++    vcng_discovery_init(&d);
++    for(unsigned i=0;i<3u;i++) {
++        assert(vcng_discovery_track(&d,100u+i*100u,4u,100u)==0);
++        d.items[i].stable_path_valid=1u;
++    }
++    cursor=0u;
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u)==2u&&cursor==2u);
++    assert(addresses[0]==100u&&addresses[1]==200u);
++    assert(vcng_discovery_relocate_candidate(&d,100u,200u,101u)==1&&d.count==2u);
++    assert(!candidate_at(&d,100u));
++    assert(vcng_discovery_select_pointer_checks(&d,&cursor,addresses,2u)==2u&&cursor==0u);
++    assert(addresses[0]==200u&&addresses[1]==300u);
++    vcng_discovery_free(&d);
++}
++static void restored_signature_generation(void) {
++    vcng_discovery original;vcng_discovery_init(&original);
++    vcng_pointer_anchor anchor={0x81000000u,0x4000u,0,0};
++    uint32_t old_address=0x81003000u;
++    assert(vcng_discovery_track(&original,old_address,4u,100u)==0);
++    assert(vcng_discovery_observe(&original,old_address,80u,VCNG_EVT_DAMAGE)==0);
++    assert(vcng_discovery_observe(&original,old_address,100u,VCNG_EVT_HEAL)==0);
++    assert(vcng_discovery_observe(&original,old_address,70u,VCNG_EVT_DAMAGE)==0);
++    assert(vcng_discovery_observe(&original,old_address,100u,VCNG_EVT_HEAL)==0);
++    vcng_discovery_rank(&original);
++    vcng_discovery_candidate *c=&original.items[0];
++    assert(vcng_discovery_ready_for_cheat(c));
++    c->signature_valid=1u;c->signature_length=16u;c->signature_target_offset=8u;
++    c->signature_validations=2u;c->signature_uniqueness=1.f;
++    for(unsigned i=0;i<16u;i++)c->signature_bytes[i]=(uint8_t)(0x10u+i);
++    memset(c->signature_mask,0xff,16u);memset(c->signature_mask+8u,0,4u);
++    uint8_t *blob=NULL;size_t bytes=0u,records=0u;
++    assert(vcng_discovery_state_encode(&original,"PCSE12345",&anchor,1u,16u,&blob,&bytes,&records)==0&&records==1u);
++    vcng_discovery restored;vcng_discovery_init(&restored);
++    assert(vcng_discovery_state_decode(blob,bytes,"PCSE12345",&anchor,1u,&restored.items,&restored.count)==0);
++    restored.capacity=restored.count;assert(restored.count==1u);
++    vcng_discovery_rank(&restored);c=&restored.items[0];
++    assert(c->signature_pending&&c->session_changes==0u);
++    assert(vcng_discovery_evidence_level(c)==VCNG_DISC_EVIDENCE_STRONG);
++    assert(!vcng_discovery_ready_for_cheat(c));
++    vcng_cheat cheat={0};assert(vcng_codegen_discovery(&cheat,c,NULL)<0);
++    assert(!cheat.lines&&cheat.count==0u);
++
++    /* A live unique scan relocates the restored candidate before generation. */
++    fixture f={0};vcng_memory memory={read_mem,NULL,&f};
++    vcng_signature_pattern pattern={0};
++    pattern.length=c->signature_length;pattern.target_offset=c->signature_target_offset;
++    memcpy(pattern.bytes,c->signature_bytes,pattern.length);
++    memcpy(pattern.mask,c->signature_mask,pattern.length);
++    memcpy(f.data+500u,pattern.bytes,pattern.length);
++    uint32_t current=125u;memcpy(f.data+508u,&current,4u);
++    vcng_region region={0u,sizeof(f.data),1,1};vcng_signature_job job={0};
++    assert(vcng_signature_job_begin(&job,&memory,&region,1u,&pattern,4096u)==0);
++    while(job.state==VCNG_SIGNATURE_RUNNING)assert(vcng_signature_job_step(&job,4096u)>=0);
++    uint32_t resolved=0u;uint64_t live=0u;
++    assert(vcng_signature_resolve_unique(&job,c->width,&resolved,&live)==0);
++    assert(resolved==508u&&live==125u);
++    assert(vcng_discovery_relocate_candidate(&restored,old_address,resolved,live)==0);
++    c=candidate_at(&restored,resolved);assert(c);
++    c->signature_pending=0u;
++    assert(vcng_discovery_ready_for_cheat(c));
++    assert(vcng_codegen_discovery(&cheat,c,NULL)==0);
++    assert(cheat.count==1u&&cheat.lines[0].a==resolved&&cheat.lines[0].b==current);
++    assert(!cheat.auto_enable);
++    vcng_codegen_cheat_free(&cheat);vcng_signature_job_free(&job);
++    free(blob);vcng_discovery_free(&restored);vcng_discovery_free(&original);
++}
+ int main(void) {
+     signature_budget(); pointer_evidence(); state_failed_path();
++    pointer_round_robin(); pointer_scheduler_mutations(); restored_signature_generation();
+     puts("resolver regression tests: PASS"); return 0;
+ }
+--- a/tests/test_vitacode.c
++++ b/tests/test_vitacode.c
+@@ -4,12 +4,89 @@
+ #include <string.h>
+ #include "vcng_program.h"
+ #include "vcng_vitacode.h"
+-typedef struct{uint8_t mem[0x6000];uint32_t base;uint32_t buttons;}fake;
+-static int rd(void*c,uint32_t a,void*d,size_t n){fake*f=c;if(a<f->base||a-f->base+n>sizeof f->mem)return-1;memcpy(d,f->mem+a-f->base,n);return 0;}
+-static int wr(void*c,uint32_t a,const void*s,size_t n){fake*f=c;if(a<f->base||a-f->base+n>sizeof f->mem)return-1;memcpy(f->mem+a-f->base,s,n);return 0;}
++#include "vcng_manager.h"
++typedef struct{uint8_t mem[0x6000];uint32_t base;uint32_t buttons;unsigned reads,writes;}fake;
++static int rd(void*c,uint32_t a,void*d,size_t n){fake*f=c;f->reads++;if(a<f->base||a-f->base+n>sizeof f->mem)return-1;memcpy(d,f->mem+a-f->base,n);return 0;}
++static int wr(void*c,uint32_t a,const void*s,size_t n){fake*f=c;f->writes++;if(a<f->base||a-f->base+n>sizeof f->mem)return-1;memcpy(f->mem+a-f->base,s,n);return 0;}
+ static uint32_t btn(void*c){return ((fake*)c)->buttons;}
+ static uint32_t getu32(fake*f,uint32_t o){uint32_t v;memcpy(&v,f->mem+o,4);return v;}
++
++static vcng_vita_report execute_text(vcng_vita_runtime *rt, const char *text) {
++ vcng_program p;vcng_vita_report rep={0};
++ assert(vcng_program_parse_text(text,&p)==0);
++ assert(p.count==1u);
++ assert(vcng_vita_execute_cheat(rt,&p.cheats[0],&rep)==0);
++ vcng_program_free(&p);
++ return rep;
++}
++
++static void test_segment_remap(void) {
++ fake f={0};f.base=0x81000000u;vcng_memory m={rd,wr,&f};
++ vcng_vita_runtime rt;vcng_vita_runtime_init(&rt,&m);
++ vcng_vita_set_segment(&rt,0,0,f.base);
++
++ /* An absent base must stop even when its offset is a valid absolute address. */
++ const char *missing="_V0 Missing\n$B21F 00000000 00000000\n$0200 81000500 DEADBEEF\n";
++ vcng_vita_report rep=execute_text(&rt,missing);
++ assert(rep.stopped&&rep.unsupported==1u);
++ assert(f.reads==0u&&f.writes==0u&&getu32(&f,0x500)==0u);
++
++ /* A populated module does not make its absent second segment available. */
++ rep=execute_text(&rt,"_V0 Missing seg1\n$B200 00000001 00000000\n$3201 81000100 00000020\n$3300 00000000 DEADBEEF\n");
++ assert(rep.stopped&&rep.unsupported==1u&&f.reads==0u&&f.writes==0u);
++ rep=execute_text(&rt,"_V0 Out of bounds\n$B220 00000000 00000000\n$0200 81000500 DEADBEEF\n");
++ assert(rep.stopped&&f.reads==0u&&f.writes==0u);
++
++ /* The highest valid module/seg1 can be published and used normally. */
++ const char *relative="_V0 Relative\n$B21F 00000001 00000000\n$0200 00000040 CAFEBABE\n";
++ vcng_vita_set_segment(&rt,31,1,f.base+0x1000u);
++ rep=execute_text(&rt,relative);
++ assert(!rep.stopped&&!rep.unsupported&&getu32(&f,0x1040)==0xCAFEBABEu);
++
++ /* Re-enumeration invalidates the previous selection without switching it to
++  * absolute mode. Neither a pending write nor a repeated B2 may reuse it. */
++ vcng_vita_clear_segments(&rt);
++ f.reads=f.writes=0u;
++ rep=execute_text(&rt,"_V0 Pending\n$0200 81000500 DEADBEEF\n");
++ assert(rep.stopped&&f.reads==0u&&f.writes==0u);
++ rep=execute_text(&rt,relative);
++ assert(rep.stopped&&f.reads==0u&&f.writes==0u);
++ assert(getu32(&f,0x1040)==0xCAFEBABEu);
++
++ /* Publishing a smaller replacement map must not revive a removed module. */
++ vcng_vita_set_segment(&rt,0,0,f.base+0x2000u);
++ rep=execute_text(&rt,missing);
++ assert(rep.stopped&&f.reads==0u&&f.writes==0u);
++ rep=execute_text(&rt,"_V0 New base\n$B200 00000000 00000000\n$0200 00000040 12345678\n");
++ assert(!rep.stopped&&!rep.unsupported&&getu32(&f,0x2040)==0x12345678u);
++ assert(getu32(&f,0x40)==0u);
++
++ /* Removing one entry also invalidates an already selected relative base. */
++ vcng_vita_set_segment(&rt,0,0,0u);
++ f.reads=f.writes=0u;
++ rep=execute_text(&rt,"_V0 Pending removed base\n$0200 81000500 DEADBEEF\n");
++ assert(rep.stopped&&f.reads==0u&&f.writes==0u);
++
++ /* Manager stops the unavailable cheat while preserving independent selectors
++  * and valid relative/absolute writes in the other enabled cheats. */
++ vcng_vita_set_segment(&rt,0,0,f.base+0x2000u);
++ vcng_manager mgr;vcng_manager_init(&mgr);
++ const char *managed="_V0 Missing\n$B21F 00000000 00000000\n$0200 81000500 DEADBEEF\n"
++                     "_V0 Relative\n$B200 00000000 00000000\n$0200 00000044 11223344\n"
++                     "_V0 Absolute\n$0200 81000504 55667788\n";
++ assert(vcng_manager_load_text(&mgr,managed)==0);
++ for(size_t i=0;i<mgr.program.count;i++)assert(vcng_manager_set_enabled(&mgr,i,1)==0);
++ assert(vcng_manager_tick(&mgr,&rt)==0);
++ assert(mgr.runtime_stops==1u&&!vcng_manager_is_enabled(&mgr,0));
++ assert(vcng_manager_is_enabled(&mgr,1)&&vcng_manager_is_enabled(&mgr,2));
++ assert(f.reads==0u&&f.writes==2u);
++ assert(getu32(&f,0x2044)==0x11223344u&&getu32(&f,0x504)==0x55667788u);
++ assert(getu32(&f,0x500)==0u);
++ vcng_manager_free(&mgr);
++}
++
+ int main(void){
++ test_segment_remap();
+  fake f={0};f.base=0x81000000;vcng_memory m={rd,wr,&f};vcng_vita_runtime rt;vcng_vita_runtime_init(&rt,&m);rt.io_ctx=&f;rt.buttons=btn;vcng_vita_set_segment(&rt,0,0,f.base);
+  /* real-style level 2 pointer */
+  uint32_t p1=f.base+0x1000,p2=f.base+0x2000;memcpy(f.mem+0x100,&p1,4);memcpy(f.mem+0x1000+0x20,&p2,4);
+--- a/vita/user/main.c
++++ b/vita/user/main.c
+@@ -107,6 +107,7 @@
+ static uint32_t discovery_pointer_target;
+ static uint32_t discovery_pointer_tick_ms;
+ static uint32_t discovery_pointer_validate_ms;
++static size_t discovery_pointer_validate_cursor;
+ static uint32_t discovery_pointer_cooldown_ms;
+ static vcng_signature_job discovery_signature_job;
+ static uint32_t discovery_signature_target;
+@@ -617,6 +618,10 @@
+ static int generate_discovery_cheat(void) {
+     vcng_discovery_candidate *c = selected_discovery_candidate();
+     if (!c) return -1;
++    if (c->signature_pending) {
++        snprintf(community_status,sizeof(community_status),"Assinatura pendente. Aguarde revalidacao antes de gerar o cheat.");
++        return -3;
++    }
+     if (!vcng_discovery_ready_for_cheat(c)) {
+         snprintf(community_status,sizeof(community_status),"Ainda nao ha evidencia forte. Use SELECT para monitorar primeiro.");
+         return -3;
+@@ -1254,10 +1259,17 @@
+     discovery_pointer_validate_ms = 0;
+     /* Revalidate only a couple of established paths per pass; this is tiny compared
+      * with the broad scanner and makes stable paths earn confidence continuously. */
++    uint32_t targets[2];
++    size_t count = vcng_discovery_select_pointer_checks(&discovery, &discovery_pointer_validate_cursor,
++                                                        targets, sizeof(targets) / sizeof(targets[0]));
++    uint32_t previous_address = 0;
+     unsigned checked = 0;
+-    for (size_t i = 0; i < discovery.count && checked < 2u; ++i) {
+-        vcng_discovery_candidate *c = &discovery.items[i];
+-        if (!c->stable_path_valid || c->validation == VCNG_DISC_VALIDATE_FAILED) continue;
++    for (size_t i = 0; i < count; ++i) {
++        /* A previous relocation may have merged this target into the candidate
++         * already checked. Resolve addresses afresh rather than retaining indices. */
++        if (checked && targets[i] == previous_address) continue;
++        vcng_discovery_candidate *c = discovery_candidate_address(targets[i]);
++        if (!c || !c->stable_path_valid || c->validation == VCNG_DISC_VALIDATE_FAILED) continue;
+         uint32_t resolved = 0; uint64_t value = 0;
+         int ok = vcng_pointer_resolve(&memory, &c->stable_path, pointer_anchors, pointer_anchor_count, &resolved) == 0 &&
+                  memory.read(memory.ctx, resolved, &value, c->width) == 0;
+@@ -1269,6 +1281,7 @@
+         }
+         vcng_discovery_candidate *current = ok ? discovery_candidate_address(resolved) : discovery_candidate_address(old_address);
+         if (current && vcng_discovery_pointer_confirmed(current)) (void)discovery_auto_generate(current);
++        previous_address = ok ? resolved : old_address;
+         checked++;
+     }
+ }
+--- a/vita/user/vita_memory.c
++++ b/vita/user/vita_memory.c
+@@ -64,6 +64,7 @@
+     size_t n = 0;
+     g_region_count = 0;
+     g_anchor_count = 0;
++    vcng_vita_clear_segments(rt);
+ 
+     SceUID mods[128];
+     SceSize mc = 128;
+--- /dev/null
++++ b/.github/workflows/vitacheat-build.yml
+@@ -0,0 +1,183 @@
++name: VitaCheat NG verified build
++
++on:
++  workflow_dispatch:
++  push:
++    branches:
++      - 'codex/vitacheat-ng-*'
++    paths:
++      - 'vitacheat-ng/**'
++      - '.ci/vitacheat/**'
++      - '.github/workflows/vitacheat-build.yml'
++  pull_request:
++    paths:
++      - 'vitacheat-ng/**'
++      - '.ci/vitacheat/**'
++      - '.github/workflows/vitacheat-build.yml'
++
++permissions:
++  contents: read
++
++concurrency:
++  group: vitacheat-ng-${{ github.ref }}
++  cancel-in-progress: true
++
++defaults:
++  run:
++    shell: bash
++    working-directory: vitacheat-ng
++
++jobs:
++  host:
++    name: Host ${{ matrix.mode }}
++    runs-on: ubuntu-24.04
++    timeout-minutes: 20
++    strategy:
++      fail-fast: false
++      matrix:
++        mode: [normal, sanitizer, release]
++    steps:
++      - name: Checkout source
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
++        with:
++          persist-credentials: false
++
++      - name: Reconstruct and verify corrected source
++        working-directory: .
++        run: python3 .ci/vitacheat/unpack.py
++
++      - name: Host regression gate
++        if: matrix.mode == 'normal'
++        run: |
++          set -euo pipefail
++          python3 tools/test_host.py 2>&1 | tee host-normal.log
++
++      - name: ASan and UBSan regression gate
++        if: matrix.mode == 'sanitizer'
++        env:
++          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
++          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
++        run: |
++          set -euo pipefail
++          python3 tools/test_host.py --sanitize 2>&1 | tee host-sanitizer.log
++
++      - name: Release CTest gate with assertions enabled
++        if: matrix.mode == 'release'
++        run: |
++          set -euo pipefail
++          cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
++          cmake --build build-release --parallel 2
++          ctest --test-dir build-release --output-on-failure 2>&1 | tee host-release.log
++
++      - name: Upload host logs
++        if: always()
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
++        with:
++          name: VitaCheat-NG-host-${{ matrix.mode }}-${{ github.run_id }}
++          path: |
++            vitacheat-ng/host-*.log
++            vitacheat-ng/build-release/Testing/Temporary/LastTest.log
++          if-no-files-found: warn
++          retention-days: 14
++
++  arm:
++    name: ARM plugins and installer
++    needs: host
++    runs-on: ubuntu-24.04
++    timeout-minutes: 30
++    env:
++      VITASDK: ${{ runner.temp }}/vitasdk
++      SDK_TAG: sdk-snapshot-20260825.611.1
++      SDK_SHA256: 3d5be8ad0fae5de872c13328f3508a59b9e1eec504269eec64e47d06de78b098
++      TAIHEN_TAG: packages-2026.08-snapshot-20260925.50.1
++      TAIHEN_SHA256: 93d2075b6b61a164224a2aad651d3d6787f31f3a19c3e2bada7c99844f9fae90
++    steps:
++      - name: Checkout source
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
++        with:
++          persist-credentials: false
++
++      - name: Reconstruct and verify corrected source
++        working-directory: .
++        run: python3 .ci/vitacheat/unpack.py
++
++      - name: Install exact VitaSDK 2026.08 and taiHEN stubs
++        run: |
++          set -euo pipefail
++          # Official 2026.08 channel, observed at website commit
++          # 26a8cb5a185b39fccbe1b62387dc6f00bf32ddd4:
++          # https://github.com/vitasdk/vitasdk.github.io/blob/26a8cb5a185b39fccbe1b62387dc6f00bf32ddd4/channels/2026.08.json
++          # The SDK archive includes vita-headers and standard stubs. Only
++          # taiHEN headers/stubs need adding to this ephemeral SDK tree.
++          curl --fail --location --retry 3 --output "$RUNNER_TEMP/vitasdk.tar.bz2" \
++            "https://github.com/vitasdk/autobuilds/releases/download/$SDK_TAG/vitasdk-bootstrap-x86_64-linux-gnu.tar.bz2"
++          printf '%s  %s\n' "$SDK_SHA256" "$RUNNER_TEMP/vitasdk.tar.bz2" | sha256sum --check -
++          mkdir "$VITASDK"
++          tar -xjf "$RUNNER_TEMP/vitasdk.tar.bz2" -C "$VITASDK" --strip-components=1
++          curl --fail --location --retry 3 --output "$RUNNER_TEMP/taihen.pkg.tar.xz" \
++            "https://github.com/vitasdk/vitasdk-autobuild/releases/download/$TAIHEN_TAG/taihen-0.11-1-vita.pkg.tar.xz"
++          printf '%s  %s\n' "$TAIHEN_SHA256" "$RUNNER_TEMP/taihen.pkg.tar.xz" | sha256sum --check -
++          tar -xJf "$RUNNER_TEMP/taihen.pkg.tar.xz" -C "$VITASDK" \
++            --exclude=.PKGINFO --exclude=.BUILDINFO --exclude=.MTREE
++          test -f "$VITASDK/share/vita.toolchain.cmake"
++          test -f "$VITASDK/arm-vita-eabi/include/taihen.h"
++          test -f "$VITASDK/arm-vita-eabi/lib/libtaihenForKernel_stub.a"
++          "$VITASDK/bin/arm-vita-eabi-gcc" --version
++          printf '%s\n' "$VITASDK/bin" >> "$GITHUB_PATH"
++
++      - name: Build ARM plugins and installer VPK
++        run: |
++          set -euo pipefail
++          {
++            cmake -S vita -B build-vita \
++              -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \
++              -DCMAKE_BUILD_TYPE=Release
++            cmake --build build-vita --target dist --parallel 2
++          } 2>&1 | tee arm-build.log
++
++      - name: Verify and package outputs
++        id: package
++        run: |
++          set -euo pipefail
++          version=$(tr -d '\r\n' < VERSION)
++          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
++          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
++          python3 - <<'PY'
++          from pathlib import Path
++          from zipfile import ZipFile
++          dist = Path('build-vita/dist')
++          with ZipFile(dist / 'VitaCheatNG-Installer.vpk') as vpk:
++              for name in ('vitacheat_ng.skprx', 'vitacheat_ng.suprx'):
++                  plugin = (dist / name).read_bytes()
++                  assert plugin, f'{name} is empty'
++                  assert vpk.read(f'res/{name}') == plugin, f'VPK embeds a different {name}'
++          PY
++          cp build-vita/dist/VitaCheatNG-Installer.vpk "build-vita/dist/VitaCheat-NG-$version.vpk"
++          {
++            printf 'VitaCheat NG %s\nsource commit: %s\n' "$version" "$GITHUB_SHA"
++            python3 -c 'import json; print("source archive SHA256:", json.load(open("../.ci/vitacheat/manifest.json"))["sha256"])'
++            printf 'VitaSDK series: 2026.08\nSDK release: %s\nSDK SHA256: %s\n' "$SDK_TAG" "$SDK_SHA256"
++            printf 'taiHEN release: %s\ntaiHEN SHA256: %s\n' "$TAIHEN_TAG" "$TAIHEN_SHA256"
++            arm-vita-eabi-gcc --version
++          } > build-vita/dist/TOOLCHAIN.txt
++          cd build-vita/dist
++          sha256sum vitacheat_ng.skprx vitacheat_ng.suprx \
++            VitaCheatNG-Installer.vpk "VitaCheat-NG-$version.vpk" TOOLCHAIN.txt > SHA256SUMS.txt
++          sha256sum --check SHA256SUMS.txt
++
++      - name: Upload ARM log
++        if: always()
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
++        with:
++          name: VitaCheat-NG-ARM-log-${{ github.run_id }}
++          path: vitacheat-ng/arm-build.log
++          if-no-files-found: warn
++          retention-days: 14
++
++      - name: Upload ARM plugins and installer
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
++        with:
++          name: VitaCheat-NG-${{ steps.package.outputs.version }}-ARM
++          path: vitacheat-ng/build-vita/dist/*
++          if-no-files-found: error
++          retention-days: 14
