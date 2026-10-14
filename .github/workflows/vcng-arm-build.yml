@@ -1,10 +1,11 @@
-name: VitaCheat NG ARM Build
+name: VitaCheat NG 0.14.5 ARM Build
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/vcng-arm-build.yml'
+      - 'vcng-build/0145-xz/**'
 
 permissions:
   contents: read
@@ -17,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Reconstruct and verify exact VitaCheat NG 0.14.4 source
+      - name: Reconstruct exact 0.14.4 ARM baseline
         shell: bash
         run: |
           set -euo pipefail
@@ -29,40 +30,56 @@ jobs:
           test "$(cat vcng0144-armmin/VERSION)" = '0.14.4'
           cp build-fixes/api.h vcng0144-armmin/vita/kernel/api.h
 
+      - name: Apply verified VitaCheat NG 0.14.5 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat vcng-build/0145-xz/part_00 vcng-build/0145-xz/part_01 vcng-build/0145-xz/part_02 > vcng0145.patch.xz
+          echo '193c53a08c64758a4500f15ef7f6ecb9901730524235d7ce12145d365f148735  vcng0145.patch.xz' | sha256sum -c -
+          xz -t vcng0145.patch.xz
+          xz -dc vcng0145.patch.xz > vcng0145.patch
+          echo 'c0fadbf7c7bcdc506fccac4e9de9ce9840fd600fb3edb5edf6d6db9707da5426  vcng0145.patch' | sha256sum -c -
+          cd vcng0144-armmin
+          git apply --check ../vcng0145.patch
+          git apply ../vcng0145.patch
+          test "$(cat VERSION)" = '0.14.5'
+          cd ..
+          mv vcng0144-armmin vcng0145-armmin
+
       - name: Build ARM plugins and installer VPK with VitaSDK 2026.08
         id: arm_build
         shell: bash
         run: |
           set -o pipefail
-          docker run --rm -v "$PWD:/workspace" -w /workspace/vcng0144-armmin vitasdk/vitasdk:2026.08 bash -lc '
+          docker run --rm -v "$PWD:/workspace" -w /workspace/vcng0145-armmin vitasdk/vitasdk:2026.08 bash -lc '
             set -euo pipefail
             export VITASDK=/usr/local/vitasdk
             export PATH="$VITASDK/bin:$PATH"
             arm-vita-eabi-gcc --version
             cmake -S vita -B build-vita -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" -DCMAKE_BUILD_TYPE=Release
             cmake --build build-vita --target dist -j2
-            cp build-vita/dist/VitaCheatNG-Installer.vpk build-vita/dist/VitaCheat-NG-0.14.4.vpk
-            sha256sum build-vita/dist/vitacheat_ng.skprx build-vita/dist/vitacheat_ng.suprx build-vita/dist/VitaCheat-NG-0.14.4.vpk > build-vita/dist/SHA256SUMS.txt
+            cp build-vita/dist/VitaCheatNG-Installer.vpk build-vita/dist/VitaCheat-NG-0.14.5.vpk
+            sha256sum build-vita/dist/vitacheat_ng.skprx build-vita/dist/vitacheat_ng.suprx build-vita/dist/VitaCheat-NG-0.14.5.vpk > build-vita/dist/SHA256SUMS.txt
           ' 2>&1 | tee vcng-arm-build.log
 
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: VitaCheat-NG-0.14.4-build-log
+          name: VitaCheat-NG-0.14.5-build-log
           path: vcng-arm-build.log
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload VitaCheat NG 0.14.4 ARM artifacts
+      - name: Upload VitaCheat NG 0.14.5 ARM artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: VitaCheat-NG-0.14.4-ARM
+          name: VitaCheat-NG-0.14.5-ARM
           path: |
-            vcng0144-armmin/build-vita/dist/vitacheat_ng.skprx
-            vcng0144-armmin/build-vita/dist/vitacheat_ng.suprx
-            vcng0144-armmin/build-vita/dist/VitaCheat-NG-0.14.4.vpk
-            vcng0144-armmin/build-vita/dist/SHA256SUMS.txt
+            vcng0145-armmin/build-vita/dist/vitacheat_ng.skprx
+            vcng0145-armmin/build-vita/dist/vitacheat_ng.suprx
+            vcng0145-armmin/build-vita/dist/VitaCheat-NG-0.14.5.vpk
+            vcng0145-armmin/build-vita/dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7
