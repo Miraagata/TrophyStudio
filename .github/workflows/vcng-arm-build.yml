@@ -1,11 +1,11 @@
-name: VitaCheat NG 0.14.5 ARM Build
+name: VitaCheat NG ARM Build
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/vcng-arm-build.yml'
-      - 'vcng-build/0145-xz/**'
+      - 'vcng0145-patch/**'
 
 permissions:
   contents: read
@@ -18,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Reconstruct exact 0.14.4 ARM baseline
+      - name: Reconstruct 0.14.4 baseline and apply 0.14.5 patch
         shell: bash
         run: |
           set -euo pipefail
@@ -27,32 +27,23 @@ jobs:
           echo '868f176728ad70c2456118aff7d2f2f2ed0097704083eb78eedad7cf34395a89  vcng0144-armmin.tar.xz' | sha256sum -c -
           xz -t vcng0144-armmin.tar.xz
           tar -xJf vcng0144-armmin.tar.xz
-          test "$(cat vcng0144-armmin/VERSION)" = '0.14.4'
           cp build-fixes/api.h vcng0144-armmin/vita/kernel/api.h
 
-      - name: Apply verified VitaCheat NG 0.14.5 patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat vcng-build/0145-xz/part_00 vcng-build/0145-xz/part_01 vcng-build/0145-xz/part_02 > vcng0145.patch.xz
-          echo '193c53a08c64758a4500f15ef7f6ecb9901730524235d7ce12145d365f148735  vcng0145.patch.xz' | sha256sum -c -
-          xz -t vcng0145.patch.xz
-          xz -dc vcng0145.patch.xz > vcng0145.patch
-          echo 'c0fadbf7c7bcdc506fccac4e9de9ce9840fd600fb3edb5edf6d6db9707da5426  vcng0145.patch' | sha256sum -c -
+          cat vcng0145-patch/part_00 vcng0145-patch/part_01 vcng0145-patch/part_02 vcng0145-patch/part_03 vcng0145-patch/part_04 > vcng0145-arm.patch.xz.b64
+          base64 --decode vcng0145-arm.patch.xz.b64 > vcng0145-arm.patch.xz
+          echo '6ba1fdf4ced92bae4db6dce5752e68de22f00356f8242e58cc84a2c0719c1d08  vcng0145-arm.patch.xz' | sha256sum -c -
+          xz -t vcng0145-arm.patch.xz
+          xz -dc vcng0145-arm.patch.xz > vcng0145-arm.patch
           cd vcng0144-armmin
-          git init -q
-          git apply --check --verbose ../vcng0145.patch
-          git apply --verbose ../vcng0145.patch
+          git apply ../vcng0145-arm.patch
           test "$(cat VERSION)" = '0.14.5'
-          cd ..
-          mv vcng0144-armmin vcng0145-armmin
 
       - name: Build ARM plugins and installer VPK with VitaSDK 2026.08
         id: arm_build
         shell: bash
         run: |
           set -o pipefail
-          docker run --rm -v "$PWD:/workspace" -w /workspace/vcng0145-armmin vitasdk/vitasdk:2026.08 bash -lc '
+          docker run --rm -v "$PWD:/workspace" -w /workspace/vcng0144-armmin vitasdk/vitasdk:2026.08 bash -lc '
             set -euo pipefail
             export VITASDK=/usr/local/vitasdk
             export PATH="$VITASDK/bin:$PATH"
@@ -78,9 +69,9 @@ jobs:
         with:
           name: VitaCheat-NG-0.14.5-ARM
           path: |
-            vcng0145-armmin/build-vita/dist/vitacheat_ng.skprx
-            vcng0145-armmin/build-vita/dist/vitacheat_ng.suprx
-            vcng0145-armmin/build-vita/dist/VitaCheat-NG-0.14.5.vpk
-            vcng0145-armmin/build-vita/dist/SHA256SUMS.txt
+            vcng0144-armmin/build-vita/dist/vitacheat_ng.skprx
+            vcng0144-armmin/build-vita/dist/vitacheat_ng.suprx
+            vcng0144-armmin/build-vita/dist/VitaCheat-NG-0.14.5.vpk
+            vcng0144-armmin/build-vita/dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7
