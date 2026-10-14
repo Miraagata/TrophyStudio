@@ -40,6 +40,7 @@ jobs:
           xz -dc vcng0145.patch.xz > vcng0145.patch
           echo 'c0fadbf7c7bcdc506fccac4e9de9ce9840fd600fb3edb5edf6d6db9707da5426  vcng0145.patch' | sha256sum -c -
           cd vcng0144-armmin
+          git init -q
           git apply --check --verbose ../vcng0145.patch
           git apply --verbose ../vcng0145.patch
           test "$(cat VERSION)" = '0.14.5'
