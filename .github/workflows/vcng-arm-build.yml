@@ -38,6 +38,8 @@ jobs:
           git init -q
           git apply --check --verbose ../vcng0145-arm.patch
           git apply --verbose ../vcng0145-arm.patch
+          git apply --check --verbose ../vcng0145-patch/linkfix.patch
+          git apply --verbose ../vcng0145-patch/linkfix.patch
           test "$(cat VERSION)" = '0.14.5'
 
       - name: Build ARM plugins and installer VPK with VitaSDK 2026.08
