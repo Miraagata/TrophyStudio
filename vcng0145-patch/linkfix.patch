@@ -1,0 +1,13 @@
+diff --git a/vita/CMakeLists.txt b/vita/CMakeLists.txt
+index 7c94385..1276fc6 100644
+--- a/vita/CMakeLists.txt
++++ b/vita/CMakeLists.txt
+@@ -24,7 +24,7 @@ set(CORE
+   ../src/regions.c ../src/executor.c ../src/program.c ../src/overlay.c
+   ../src/ui_state.c ../src/app.c ../src/draw.c ../src/config.c ../src/diag.c
+   ../src/freezer2.c ../src/value_compare.c ../src/vitacode.c ../src/discovery.c ../src/discovery_control.c ../src/governor.c ../src/compact_scan.c ../src/manager.c ../src/scan_job.c ../src/discovery_sampler.c ../src/suggest.c ../src/memory_tools.c ../src/fuzzy_job.c ../src/memory_browser.c ../src/value_editor.c ../src/compat.c ../src/catalog.c ../src/profile.c ../src/community.c ../src/codegen.c ../src/pointer.c ../src/pointer_job.c ../src/discovery_state.c ../src/representation.c ../src/behavior.c ../src/struct_infer.c ../src/validator.c ../src/signature.c)
+-add_executable(vcng_user user/main.c user/platform.c user/tinyfont.c user/vita_memory.c user/vita_scan_store.c user/vita_io.c ${CORE})
++add_executable(vcng_user user/main.c user/platform.c user/tinyfont.c user/vita_memory.c user/vita_scan_store.c user/vita_io.c kernel/io_wire.c ${CORE})
+ add_dependencies(vcng_user vcng_kernel_stubs)
+ set_target_properties(vcng_user PROPERTIES LINK_FLAGS "-nostdlib" COMPILE_FLAGS "-std=gnu11 -DNDEBUG")
+ target_link_libraries(vcng_user ${CMAKE_BINARY_DIR}/vcng_kernel_stubs/libVitaCheatNGKernel_stub_weak.a taihen_stub SceLibc_stub_weak SceLibKernel_stub_weak gcc SceSysmem_stub_weak SceKernelThreadMgr_stub_weak SceKernelModulemgr_stub_weak SceCtrl_stub_weak SceDisplay_stub_weak SceIofilemgr_stub_weak SceAppMgr_stub_weak SceProcessmgr_stub_weak ScePower_stub_weak)
