@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      VITASDK: ${{ runner.temp }}/vitasdk
+      VITASDK: /tmp/vitacheat-vitasdk
       SDK_TAG: sdk-snapshot-20260825.611.1
       SDK_SHA256: 3d5be8ad0fae5de872c13328f3508a59b9e1eec504269eec64e47d06de78b098
       TAIHEN_TAG: packages-2026.08-snapshot-20260925.50.1
