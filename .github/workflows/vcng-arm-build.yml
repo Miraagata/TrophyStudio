@@ -45,7 +45,7 @@ jobs:
 
           cat vcng0147-patch/part_00 > vcng0147-arm.patch.xz.b64
           base64 --decode vcng0147-arm.patch.xz.b64 > vcng0147-arm.patch.xz
-          echo '779d327885dadc53cdbe1e5370607e4c88f16ba592638b6b2cd81f11b010c92e  vcng0147-arm.patch.xz' | sha256sum -c -
+          echo '088861b544684e3529e8b392eb00bdd161385023a086e889df64bfc306ebbcf2  vcng0147-arm.patch.xz' | sha256sum -c -
           xz -t vcng0147-arm.patch.xz
           xz -dc vcng0147-arm.patch.xz > vcng0147-arm.patch
 
