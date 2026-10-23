@@ -39,4 +39,26 @@ ARM/VPK gate:
 - Final 0.14.6→0.14.7 full patch SHA-256: `6ad21649055b6320e874f21caff72e0b84e5bd8b73fbd9e33bc485d8cd18448b`.
 - 0.14.7 remains hardware-pending: ARM success does not prove the Discovery read path on a real Vita.
 
+## VCNG Companion / agentic discovery — Phase 1
+
+Decision: keep automated code discovery as the primary objective. Gemini via Antigravity is introduced as an orchestrator that chooses experiments; deterministic tools remain responsible for all measurements and candidate generation.
+
+Branch: `vcng-agent-companion`.
+
+Implemented:
+- PC-side standard-library Python companion under `companion/`;
+- raw snapshot pair scanner for changed/unchanged/increased/decreased values;
+- 8/16/32/64-bit integer and 32/64-bit float support;
+- parser/summarizer for 0.14.7 Discovery telemetry TSV;
+- typed JSON CLI intended for Antigravity/Gemini tool calls;
+- explicit agent policy: no invented addresses, no semantic promotion from one event, no cheat export before cross-context validation;
+- memory writes and code patches intentionally absent from Phase 1;
+- `ANTIGRAVITY.md`, roadmap and dedicated Companion development log;
+- GitHub Actions CI for tests and JSON CLI smoke test.
+
+Validation:
+- local standard-library tests: 3/3 PASS;
+- GitHub Actions run `39984849960`, job `120521246424`: PASS;
+- next gate: real 0.14.7 telemetry, then authenticated Vita↔PC transport and automated multi-snapshot narrowing.
+
 Next engineering decisions will use real 0.14.6/0.14.7 telemetry to determine whether the root cause is map enumeration, kernel read bridge, sampler coverage or downstream filtering. Larger audit items (K-06/M-01, UI/runtime concurrency, code-patch semantics and multiwrite atomicity) remain queued and are not mixed into the frozen baseline.
