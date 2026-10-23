@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vcng-companion"
+version = "0.1.0"
+description = "Deterministic PC-side analysis tools for VitaCheat NG agent workflows"
+requires-python = ">=3.10"
+
+[project.scripts]
+vcng = "vcng_companion.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
