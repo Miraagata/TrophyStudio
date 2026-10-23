@@ -1,0 +1,23 @@
+name: VCNG Companion Tests
+
+on:
+  push:
+    paths:
+      - 'companion/**'
+      - '.github/workflows/vcng-companion-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run standard-library test suite
+        run: |
+          PYTHONPATH=companion/src python -m unittest discover -s companion/tests -v
+      - name: Smoke-test JSON CLI
+        run: |
+          PYTHONPATH=companion/src python -m vcng_companion.cli policy | python -m json.tool >/dev/null
